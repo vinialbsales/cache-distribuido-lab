@@ -1,0 +1,96 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cache-distribuido-api
+    environment:
+      APP_NAME: ${APP_NAME:-cache-distribuido-lab}
+      APP_ENV: ${APP_ENV:-local}
+      POSTGRES_DB: ${POSTGRES_DB:-cache_lab}
+      POSTGRES_USER: ${POSTGRES_USER:-cache_lab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cache_lab}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-cache_lab}:${POSTGRES_PASSWORD:-cache_lab}@postgres:5432/${POSTGRES_DB:-cache_lab}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: ${REDIS_DB:-0}
+      REDIS_URL: redis://redis:6379/${REDIS_DB:-0}
+      REDIS_TTL_SECONDS: ${REDIS_TTL_SECONDS:-60}
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)\"",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: cache-distribuido-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cache_lab}
+      POSTGRES_USER: ${POSTGRES_USER:-cache_lab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cache_lab}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cache_lab} -d ${POSTGRES_DB:-cache_lab}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: cache-distribuido-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  k6:
+    image: grafana/k6:0.49.0
+    container_name: cache-distribuido-k6
+    profiles:
+      - benchmark
+    environment:
+      BASE_URL: http://api:8000
+      PRODUCT_ID: ${K6_PRODUCT_ID:-1}
+      VUS: ${K6_VUS:-20}
+      DURATION: ${K6_DURATION:-30s}
+      SLEEP: ${K6_SLEEP:-1}
+    volumes:
+      - ./k6:/scripts:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    entrypoint: ["k6"]
+
+volumes:
+  postgres_data:
+  redis_data:
