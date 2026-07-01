@@ -6,7 +6,7 @@ Projeto acadêmico para demonstrar estratégias de caching distribuído usando R
 
 Implementar uma API com FastAPI que permita comparar consultas diretas ao PostgreSQL com consultas usando cache distribuído no Redis.
 
-## Arquitetura Inicial
+## Arquitetura
 
 - **FastAPI**: API HTTP da aplicação.
 - **PostgreSQL**: banco principal e fonte de verdade dos produtos.
@@ -85,7 +85,7 @@ Resposta esperada:
 }
 ```
 
-## Estratégias que serão demonstradas
+## Estratégias demonstradas
 
 ### Cache-aside
 
@@ -123,6 +123,11 @@ No cache-aside, o cache é preenchido durante a leitura: a aplicação tenta ler
 │   ├── cache_hot.js
 │   ├── mixed_load.js
 │   └── no_cache.js
+├── results/
+│   ├── cache_cold.json
+│   ├── cache_hot.json
+│   ├── mixed_load.json
+│   └── no_cache.json
 ├── scripts/
 ├── tests/
 ├── docker-compose.yml
@@ -200,6 +205,17 @@ Rode o benchmark sem cache:
 k6 run k6/no_cache.js
 ```
 
+Para atualizar os arquivos usados na tabela deste README, exporte o resumo do k6:
+
+```bash
+k6 run --summary-export results/no_cache.json k6/no_cache.js
+docker compose exec redis redis-cli FLUSHDB
+k6 run --summary-export results/cache_cold.json k6/cache_cold.js
+docker compose exec redis redis-cli FLUSHDB
+k6 run --summary-export results/cache_hot.json k6/cache_hot.js
+k6 run --summary-export results/mixed_load.json k6/mixed_load.js
+```
+
 Rode o benchmark com cache frio, depois de limpar o Redis:
 
 ```bash
@@ -225,30 +241,37 @@ Também é possível rodar k6 via Docker Compose, sem instalar k6 localmente:
 
 ```bash
 docker compose --profile benchmark run --rm k6 run /scripts/no_cache.js
+docker compose --profile benchmark run --rm k6 run /scripts/cache_cold.js
 docker compose --profile benchmark run --rm k6 run /scripts/cache_hot.js
 docker compose --profile benchmark run --rm k6 run /scripts/mixed_load.js
 ```
 
-Os parâmetros podem ser ajustados por variáveis de ambiente:
+Os parâmetros podem ser ajustados por variáveis de ambiente. Ao rodar k6 localmente, use os nomes lidos diretamente pelos scripts:
 
 ```bash
 VUS=50 DURATION=1m PRODUCT_ID=1 k6 run k6/cache_hot.js
 ```
 
+Ao rodar pelo serviço `k6` do Docker Compose, use as variáveis com prefixo `K6_` definidas em `docker-compose.yml`:
+
+```bash
+K6_VUS=50 K6_DURATION=1m K6_PRODUCT_ID=1 docker compose --profile benchmark run --rm k6 run /scripts/cache_hot.js
+```
+
 ## Interpretação dos resultados
 
-Compare os cenários usando a tabela abaixo:
+Compare os cenários usando a tabela abaixo, gerada a partir dos arquivos em `results/`:
 
-| Cenário | Latência média | p95 | Requisições por segundo | Observação |
-| --- | --- | --- | --- | --- |
-| Sem cache | 13.95 ms | 27.06 ms | 19.65 req/s | 0% de falhas |
-| Cache frio | 5.70 ms | 5.70 ms | N/A | 0% de falhas; apenas 1 iteração, usada para demonstrar `MISS` |
-| Cache quente | 2.32 ms | 3.96 ms | 19.97 req/s | 0% de falhas |
-| Carga mista | 6.13 ms | 33.04 ms | 19.84 req/s | 0% de falhas |
+| Cenário | Arquivo | Iterações | Latência média | p95 | Requisições por segundo | Falhas |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Sem cache | `results/no_cache.json` | 600 | 11.08 ms | 45.98 ms | 19.71 req/s | 0% |
+| Cache frio | `results/cache_cold.json` | 1 | 5.70 ms | 5.70 ms | N/A | 0% |
+| Cache quente | `results/cache_hot.json` | 600 | 2.32 ms | 3.97 ms | 19.97 req/s | 0% |
+| Carga mista | `results/mixed_load.json` | 600 | 6.14 ms | 33.05 ms | 19.84 req/s | 0% |
 
-O cenário sem cache consulta o PostgreSQL diretamente em todas as leituras. Com cache quente, as leituras são atendidas pelo Redis, reduzindo a latência média de 13.95 ms para 2.32 ms, uma queda de aproximadamente 83%. O p95 também caiu de 27.06 ms para 3.96 ms, uma redução de aproximadamente 85%. O cache frio foi executado com apenas 1 iteração para demonstrar o comportamento de `MISS`: a aplicação consulta o banco, popula o Redis e deixa o dado pronto para leituras seguintes.
+O cenário sem cache consulta o PostgreSQL diretamente em todas as leituras. Com cache quente, as leituras são atendidas pelo Redis, reduzindo a latência média de 11.08 ms para 2.32 ms, uma queda de aproximadamente 79%. O p95 caiu de 45.98 ms para 3.97 ms, uma redução de aproximadamente 91%. O cache frio foi executado com apenas 1 iteração para demonstrar o comportamento de `MISS`: a aplicação consulta o banco, popula o Redis e deixa o dado pronto para leituras seguintes. Por ter apenas uma iteração, sua taxa de requisições por segundo não é comparável aos cenários de 30 segundos.
 
-O throughput ficou parecido entre os cenários principais: 19.65 req/s sem cache, 19.97 req/s com cache quente e 19.84 req/s na carga mista. Isso acontece porque os scripts de benchmark usam pausa entre iterações, o que limita a taxa de requisições gerada pelo teste. Por isso, a comparação principal deve ser feita pela latência média e pelo p95, não pela vazão.
+O throughput ficou parecido entre os cenários principais: 19.71 req/s sem cache, 19.97 req/s com cache quente e 19.84 req/s na carga mista. Isso acontece porque os scripts de benchmark usam pausa entre iterações, o que limita a taxa de requisições gerada pelo teste. Por isso, a comparação principal deve ser feita pela latência média e pelo p95, não pela vazão.
 
 A comparação principal deve observar:
 
@@ -259,4 +282,4 @@ A comparação principal deve observar:
 
 ## Status
 
-A aplicação já contém a base FastAPI, integração com PostgreSQL e Redis, endpoints de leitura sem cache, leitura com cache-aside, métricas em memória, invalidação de cache em atualização/remoção e criação write-through. As próximas etapas estão descritas no [TODO.md](TODO.md).
+A aplicação contém a base FastAPI, integração com PostgreSQL e Redis, endpoints de leitura sem cache, leitura com cache-aside, métricas em memória, invalidação de cache em atualização/remoção, criação write-through, testes automatizados e scripts de benchmark k6. O checklist de implementação está concluído em [TODO.md](TODO.md).
